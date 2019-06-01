@@ -67,11 +67,13 @@ def retreive_logit_qubits(results):
     logics = []
     for r in results:
         if r[-1] == 1:
-            print('Ancilla wrong, discarded!')
-            logics.append([-1, -1])
+            pass
+            # print('Ancilla wrong, discarded!')
+            # logics.append([-1, -1])
         elif sum(r) % 1 == 1:
-            print('Gate error, discarded!')
-            logics.append([-1, -1])
+            pass
+            # print('Gate error, discarded!')
+            # logics.append([-1, -1])
         elif r[0] == r[1] == r[2] == r[3]:
             logics.append([0, 0])
         elif r[0] == r[1] == 1-r[2] == 1-r[3]:
@@ -81,7 +83,8 @@ def retreive_logit_qubits(results):
         elif r[0] == 1-r[1] == 1-r[2] == r[3]:
             logics.append([1, 1])
         else:
-            print(r)
+            pass
+            # print(r)
     return logics
  
 

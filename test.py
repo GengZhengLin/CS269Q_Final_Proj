@@ -8,6 +8,7 @@ import random
 import matplotlib.pyplot as plt
 
 wf_sim = WavefunctionSimulator()
+verbose=False
 
 def get_model(filename):
     with open(filename, 'r') as file:
@@ -29,7 +30,7 @@ def rand_pq(t):
             pq.append(('CZ',))
     return pq
 
-def get_encoded_pq(pq_tuples):
+def get_encoded_pq(pq_tuples,noise=None):
     pq,code_register=encode()
     for t in pq_tuples:
         if t[0]=='X':
@@ -40,10 +41,12 @@ def get_encoded_pq(pq_tuples):
             pq=add_logic_gate(pq,code_register,t[0],0)
         elif t[0]=='CZ':
             pq=add_logic_gate(pq,code_register,t[0],0)
+        if noise is not None:
+            pq+=noise(code_register)
     pq=measure(pq,code_register)
     return pq,code_register
 
-def get_unencoded_pq(pq_tuples,measure_pq=True):
+def get_unencoded_pq(pq_tuples,measure_pq=True,noise=None):
     pq = Program()
     code_register =  QubitPlaceholder.register(2)
     for t in pq_tuples:
@@ -55,6 +58,8 @@ def get_unencoded_pq(pq_tuples,measure_pq=True):
             pq+=[H(code_register[0]),H(code_register[1]),SWAP(code_register[0],code_register[1])]
         elif t[0]=='CZ':
             pq+=[CZ(code_register[0],code_register[1]),Z(code_register[0]),Z(code_register[1])]
+        if noise is not None:
+            pq+=noise(code_register)
     if measure_pq:
         pq=measure(pq,code_register)
     return pq,code_register
@@ -71,35 +76,62 @@ def get_distr(measures):
 
 def test(t,trials=10000,noisy=False):
     pq_tuples=rand_pq(t)
-    gt_pq,gt_code_register=get_unencoded_pq(pq_tuples,measure_pq=False)
-    encoded_pq,encoded_code_register=get_encoded_pq(pq_tuples)
-    unencoded_pq,unencoded_code_register=get_unencoded_pq(pq_tuples)
-
+    noise=None
     if noisy:
-        noise_file='noise_model.quil'
-        model_info=get_model(noise_file)
-        encoded_pq=Program(model_info)+encoded_pq
-        unencoded_pq=Program(model_info)+unencoded_pq
+        def noise(code_register):
+            return [I(qq) for qq in code_register]
 
+    gt_pq,gt_code_register=get_unencoded_pq(pq_tuples,measure_pq=False,noise=None)
     gt_pq+=[I(gt_code_register[0]),I(gt_code_register[1])] # stupid simulator
     gt_pq=address_qubits(gt_pq,qubit_mapping={gt_code_register[i]:i for i in range(len(gt_code_register))})
     wf=wf_sim.wavefunction(gt_pq)
     p=np.absolute(wf.amplitudes)**2
 
+    encoded_pq,encoded_code_register=get_encoded_pq(pq_tuples,noise=noise)
+    encoded_pq=address_qubits(encoded_pq,qubit_mapping={encoded_code_register[i]:i for i in range(len(encoded_code_register))})
+    unencoded_pq,unencoded_code_register=get_unencoded_pq(pq_tuples,noise=noise)
     unencoded_pq=address_qubits(unencoded_pq,qubit_mapping={unencoded_code_register[i]:i for i in range(len(unencoded_code_register))})
+
+    if noisy:
+        kraus_ops=[np.array([[0.9991083378177872,0.0],[0.0,0.9973258078042986]]),
+                   np.array([[0.0422200106937267,0.0],[0.0,-0.042144685092505366]]),
+                   np.array([[0.0,0.059654872261407456],[0.0,0.0]]),
+                   np.array([[0.0,-0.002520877115599509],[0.0,0.0]])]
+        noise_data=Program()
+        for qq in range(len(encoded_code_register)):
+            noise_data.define_noisy_gate("I",[qq],kraus_ops)
+        encoded_pq=noise_data+encoded_pq
+
+        noise_data=Program()
+        for qq in range(len(unencoded_code_register)):
+            noise_data.define_noisy_gate("I",[qq],kraus_ops)
+        unencoded_pq=noise_data+unencoded_pq
+
+    # print(gt_pq)
+    # return
+
     measures=qvm.run(unencoded_pq,trials=trials)
     q=get_distr(np.array(measures))
 
-    encoded_pq=address_qubits(encoded_pq,qubit_mapping={encoded_code_register[i]:i for i in range(len(encoded_code_register))})
     measures=qvm.run(encoded_pq,trials=trials)
-    r=get_distr(np.array(retreive_logit_qubits(measures)))
+    measures=retreive_logit_qubits(measures)
+    if verbose:
+        print('meansures:',len(measures))
+    r=get_distr(np.array(measures))
 
-    print('p',p)
-    print('q',q)
-    print('r',r)
     dpq=distr_dis(p,q)
     dpr=distr_dis(p,r)
-    print('dpq',dpq,'dpr',dpr)
+    
+    if verbose:
+        print('t',t)
+        print(wf.amplitudes)
+        print('p',p)
+        print('q',q)
+        print('r',r)
+        print('dpq',dpq,'dpr',dpr)
+    if dpr>dpq:
+        print('not fault-tolerant,t={}'.format(t))
+        print(pq_tuples)
     return dpq,dpr
 
 def plot(Ts,dpr,dpq):
@@ -113,26 +145,26 @@ def plot(Ts,dpr,dpq):
     fig.savefig('error_rate.png')
 
 if __name__=='__main__':
-    T=10
-    r=10
+    T=100
+    r=100
     Ts=range(1,T)
     dpr_arr=np.zeros(len(Ts))
     dpq_arr=np.zeros(len(Ts))
-    for t in Ts:
+    for i in range(len(Ts)):
+        t=Ts[i]
         sum_dpr,sum_dpq=0,0
         for ir in range(r):
-            dpq,dpr=test(t=5,noisy=True)
+            dpq,dpr=test(t=t,noisy=True)
             sum_dpq+=dpq
             sum_dpr+=dpr
-            if dpr>dpq:
-                print('dpr>dpq,not fault tolerant,t={}'.format(t))
-        dpr_arr[t]=sum_dpr/r
-        dpq_arr[t]=sum_dpq/r
+        dpr_arr[i]=sum_dpr/r
+        dpq_arr[i]=sum_dpq/r
+
     np.savetxt('Ts.txt',np.array(Ts))
     np.savetxt('dpq.txt',dpq_arr)
     np.savetxt('dpr.txt',dpr_arr)
 
+    # Ts=np.loadtxt('Ts.txt')
     # dpq_arr=np.loadtxt('dpq.txt')
     # dpr_arr=np.loadtxt('dpr.txt')
-    # Ts=range(1,T)
     # plot(Ts,dpr_arr,dpq_arr)
